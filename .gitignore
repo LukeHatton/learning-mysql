@@ -75,3 +75,4 @@ fabric.properties
 /.idea/sqldialects.xml
 /.idea/vcs.xml
 /.idea/dataSources.xml
+/.idea/learning-mysql.iml
