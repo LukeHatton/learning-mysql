@@ -45,8 +45,8 @@ FROM test_table;
 EXPLAIN
 SELECT *
 FROM test_table
-     # LIMIT 900000,100;
-WHERE id BETWEEN 900000 AND 900100;
+LIMIT 900000,100;
+# WHERE id BETWEEN 900000 AND 900100;
 
 EXPLAIN
 SELECT *
@@ -88,10 +88,10 @@ BEGIN
     loop_label: LOOP
         IF count > 1000 * 1000 THEN
             LEAVE loop_label;
-        ELSE
-            INSERT INTO test_table(column_2, column_3, column_4, column_5, column_6, column_7, column_8, column_9)
-            VALUES ('中文2', '中文3', '中文4', '中文5', '中文6', '中文7', '中文8', '中文9');
-            SET count = count + 1;
+            ELSE
+                INSERT INTO test_table(column_2, column_3, column_4, column_5, column_6, column_7, column_8, column_9)
+                VALUES ('中文2', '中文3', '中文4', '中文5', '中文6', '中文7', '中文8', '中文9');
+                SET count = count + 1;
         END IF;
     END LOOP;
 END;
@@ -103,12 +103,15 @@ DELIMITER %
 CREATE PROCEDURE procedure_insert_foo_data()
 BEGIN
     DECLARE loop_index INTEGER DEFAULT 0;
+    DECLARE max_row_num INT DEFAULT 0;
     loop_label: LOOP
         IF loop_index >= 100000 THEN
             LEAVE loop_label ;
         END IF;
-        INSERT INTO test_table_uuid (id, column_2, column_3, column_4, column_5, column_6, column_7, column_8, column_9)
-        VALUES (UUID(), '中文2', '中文3', '中文4', '中文5', '中文6', '中文7', '中文8', '中文9');
+        SELECT MAX(row_num) INTO max_row_num FROM test_table_uuid;
+        INSERT INTO test_table_uuid (id, column_2, column_3, column_4, column_5, column_6, column_7, column_8, column_9,
+                                     row_num)
+        VALUES (UUID(), '中文2', '中文3', '中文4', '中文5', '中文6', '中文7', '中文8', '中文9', max_row_num + 1);
         SET loop_index = loop_index + 1;
     END LOOP loop_label;
 END %
@@ -118,8 +121,14 @@ DELIMITER ;
 # windows平台mariadb居然花了20秒..每秒才五万插入
 CALL proc_insertFooData;
 
-# 10万主键UUID写入，花费两分钟
+# windows 10万主键UUID写入，花费两分钟
 # 相比之前的一万数据写入要花费40s，已经提升很大，但还是很慢，mac上写入百万只需要两分钟
+# 会不会是mysql底层使用系统调用来生成UUID，然后mac系统的UUID生成算法非常高效？
+# 但这也无法解释win平台无UUID直插也很慢，会不会是mac巨大的内存带宽的影响？但这只应影响传输速度
+# 如果是带宽差距乘上UUID生成算法上的差距，win比mac插入慢上十倍是有可能的
+# mac insert不调用任何函数耗时：12s
+# mac insert时加入调用get_max_row_num计算最大行数，耗时：12s
+# mac insert时加入调用预置函数max()计算最大行数，耗时：11.584s，其实差不多
 CALL procedure_insert_foo_data;
 
 SELECT LAST_INSERT_ID();
@@ -140,9 +149,9 @@ LIMIT 900000,30000;
 
 SELECT *
 FROM (
-         SELECT *, ROW_NUMBER() OVER (ORDER BY column_2) r
-         FROM test_table_uuid
-         LIMIT 100
+    SELECT *, ROW_NUMBER() OVER (ORDER BY column_2) r
+    FROM test_table_uuid
+    LIMIT 100
      ) t
 WHERE r BETWEEN 10 AND 20;
 
@@ -157,12 +166,12 @@ LIMIT 1000000;
 EXPLAIN
 SELECT *
 FROM test_table_uuid t
-         INNER JOIN
-     (
-         SELECT id
-         FROM test_table_uuid
-         LIMIT 900000,30000
-     ) t2 ON t.id = t2.id;
+    INNER JOIN
+(
+    SELECT id
+    FROM test_table_uuid
+    LIMIT 900000,30000
+)                    t2 ON t.id = t2.id;
 
 #
 SELECT id, ROW_NUMBER() OVER () AS 'row_number'
@@ -174,6 +183,7 @@ FROM test_table_uuid;
 # 查看一下存储引擎，看是不是存储引擎的问题
 SHOW CREATE TABLE test_table_uuid;
 # 会不会是UUID()函数执行太慢了？但是在mac上也用了这个函数，也是mariadb，速度就很快
+# 只是在mac上执行快而已，不是函数的问题
 SELECT UUID();
 
 SELECT RAND() * 100;
@@ -195,4 +205,60 @@ CREATE TABLE people
     age  INT         NULL
 );
 
+SELECT *
+FROM test_table_uuid_2
+LIMIT 10;
+
 SHOW TABLES;
+
+SHOW CREATE TABLE test_table_uuid_2;
+
+/*================ 更新自增列的存储过程 ================*/
+DROP PROCEDURE IF EXISTS update_row_num;
+DELIMITER %
+CREATE PROCEDURE update_row_num()
+BEGIN
+    DECLARE row_index INT DEFAULT 0; # 行索引
+    DECLARE no_more INT DEFAULT 0;
+    DECLARE uuid VARCHAR(36) DEFAULT '';
+    DECLARE my_cursor CURSOR FOR SELECT id FROM test_table_uuid WHERE row_num IS NULL; # 游标循环每一行数据
+    DECLARE CONTINUE HANDLER FOR NOT FOUND SET no_more = 1;
+    OPEN my_cursor;
+    SELECT get_max_row_num() + 1 INTO row_index;
+    loop_label: LOOP
+        FETCH my_cursor INTO uuid;
+        IF no_more THEN
+            LEAVE loop_label;
+        END IF;
+        UPDATE test_table_uuid SET row_num = row_index WHERE id = uuid;
+        SET row_index = row_index + 1;
+    END LOOP loop_label;
+    CLOSE my_cursor;
+END
+%
+DELIMITER ;
+
+# 140s完成百万数据更新
+# 12.451s完成十万数据更新
+CALL update_row_num();
+
+/*---------------- 新增数据 ----------------*/
+# 读取数字索引列中最大的数字
+SELECT row_num
+FROM test_table_uuid
+ORDER BY row_num DESC
+LIMIT 1;
+# 读取最大索引列数字的函数
+DROP FUNCTION IF EXISTS get_max_row_num;
+DELIMITER %
+CREATE FUNCTION get_max_row_num() RETURNS INT
+BEGIN
+    DECLARE max_row_num INT DEFAULT 0;
+    SELECT row_num
+    INTO max_row_num
+    FROM test_table_uuid
+    ORDER BY row_num DESC
+    LIMIT 1;
+    RETURN (max_row_num);
+END %
+DELIMITER ;
