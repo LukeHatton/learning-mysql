@@ -262,3 +262,58 @@ BEGIN
     RETURN (max_row_num);
 END %
 DELIMITER ;
+
+# type=all
+EXPLAIN
+SELECT *
+FROM test_table_uuid
+LIMIT 900000,1;
+
+# type=index
+EXPLAIN
+SELECT id, row_num
+FROM test_table_uuid
+ORDER BY row_num
+LIMIT 900000,20;
+
+# type=range
+EXPLAIN
+SELECT *
+FROM test_table_uuid
+WHERE row_num BETWEEN 900000 AND 900020;
+
+# type=range
+EXPLAIN
+SELECT *
+FROM test_table_uuid
+WHERE test_table_uuid.row_num IN (300403, 600056, 999003, 1000000);
+
+EXPLAIN
+SELECT id
+FROM test_table_uuid
+WHERE test_table_uuid.row_num BETWEEN 200000 AND 300000
+LIMIT 3000;
+
+ANALYZE TABLE test_table_uuid;
+
+EXPLAIN
+SELECT *
+FROM test_database.test_table_uuid;
+
+EXPLAIN
+SELECT *
+FROM test_table_uuid
+WHERE test_table_uuid.row_num IN (
+    SELECT row_num
+    FROM test_table_uuid_2
+    WHERE test_table_uuid.row_num BETWEEN 100 AND 200
+                                 );
+
+EXPLAIN FORMAT = TRADITIONAL
+SELECT *
+FROM test_table_uuid
+WHERE test_table_uuid.row_num BETWEEN 0 AND 100
+UNION
+SELECT *
+FROM test_table_uuid_2
+WHERE row_num BETWEEN 0 AND 100;
